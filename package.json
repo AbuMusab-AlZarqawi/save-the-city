@@ -1,0 +1,19 @@
+{
+  "name": "save-the-city-contracts",
+  "version": "1.0.0",
+  "description": "Save The City - Onchain AI game on Ritual Chain",
+  "scripts": {
+    "compile": "hardhat compile",
+    "deploy:ritual": "hardhat run scripts/deploy.ts --network ritual",
+    "test": "hardhat test",
+    "clean": "hardhat clean"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@types/node": "^20.0.0",
+    "dotenv": "^16.4.5",
+    "hardhat": "^2.22.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
