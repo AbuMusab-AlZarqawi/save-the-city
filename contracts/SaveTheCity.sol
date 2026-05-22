@@ -3,34 +3,15 @@ pragma solidity ^0.8.20;
 
 /**
  * @title SaveTheCity
- * @dev Onchain AI game using Ritual Chain's native LLM precompile.
- *      Players pay 0.01 RITUAL per game. The LLM precompile generates
- *      a unique hero story fully onchain inside a TEE.
- *
- * Ritual LLM Precompile address: 0x0000000000000000000000000000000000000101
+ * @dev Onchain AI game on Ritual Chain.
+ *      AI story is generated serverside via Anthropic API and passed in.
+ *      The contract records the result permanently onchain.
+ *      Gas only — no platform fee.
  */
-
-interface IRitualLLM {
-    /**
-     * @notice Synchronous inference - returns result immediately (TEE-verified).
-     *         Ritual Chain supports synchronous calls via its native precompile.
-     */
-    function infer(
-        string calldata model,
-        string calldata prompt,
-        uint256 maxTokens
-    ) external payable returns (string memory result);
-}
-
 contract SaveTheCity {
     // -----------------------------------------------------------------------
     // Constants
     // -----------------------------------------------------------------------
-    address public constant RITUAL_LLM_PRECOMPILE = 0x0000000000000000000000000000000000000802;
-    uint256 public constant PLAY_FEE = 0;
-    uint256 public constant MAX_STORY_TOKENS = 300;
-    string  public constant LLM_MODEL = "llama3.1-8b-instruct";
-
     uint8 public constant HERO_DUNKEN = 0;
     uint8 public constant HERO_STEFAN = 1;
     uint8 public constant HERO_JEZ    = 2;
@@ -86,33 +67,22 @@ contract SaveTheCity {
     // -----------------------------------------------------------------------
 
     /**
-     * @notice Play a game. Send exactly 0.01 RITUAL.
+     * @notice Record a game result onchain. Story is generated offchain via
+     *         Anthropic API and passed in. Only gas cost — no platform fee.
      * @param heroId   0=Dunken, 1=Stefan, 2=Jez
      * @param scenario The city threat scenario string
+     * @param story    The AI-generated story from the API route
      */
-    function playGame(uint8 heroId, string calldata scenario)
-        external
-        payable
-        returns (string memory story)
-    {
-        require(msg.value == 0, "SaveTheCity: no payment required");
+    function playGame(
+        uint8 heroId,
+        string calldata scenario,
+        string calldata story
+    ) external {
         require(heroId <= 2, "SaveTheCity: invalid hero ID");
         require(bytes(scenario).length > 0, "SaveTheCity: scenario required");
+        require(bytes(story).length > 0, "SaveTheCity: story required");
 
         string memory heroName = _heroName(heroId);
-        string memory heroDesc = _heroDescription(heroId);
-
-        string memory prompt = string(abi.encodePacked(
-            "You are a dramatic comic-book narrator. A city is under threat. ",
-            "The threat: ", scenario, ". ",
-            "The hero who answered the call is ", heroName, " - ", heroDesc, ". ",
-            "Write a thrilling 3-sentence story of how ", heroName,
-            " saved the city from this exact threat. ",
-            "Make it dramatic, heroic, and specific to the threat. End with the city safe."
-        ));
-
-        IRitualLLM llm = IRitualLLM(RITUAL_LLM_PRECOMPILE);
-        story = llm.infer{value: 0}(LLM_MODEL, prompt, MAX_STORY_TOKENS);
 
         uint256 gameIndex = allGames.length;
         uint256 gameNumber = ++totalGamesPlayed;
@@ -131,19 +101,6 @@ contract SaveTheCity {
         heroPlayCount[heroId]++;
 
         emit GamePlayed(gameNumber, msg.sender, heroId, heroName, scenario, story, block.timestamp);
-    }
-
-    // -----------------------------------------------------------------------
-    // Scenario Seed (frontend uses this to pick a scenario)
-    // -----------------------------------------------------------------------
-
-    function getScenarioSeed() external view returns (uint256) {
-        return uint256(keccak256(abi.encodePacked(
-            block.timestamp,
-            block.prevrandao,
-            msg.sender,
-            totalGamesPlayed
-        ))) % 20;
     }
 
     // -----------------------------------------------------------------------
@@ -223,16 +180,6 @@ contract SaveTheCity {
         if (heroId == HERO_DUNKEN) return "Dunken";
         if (heroId == HERO_STEFAN) return "Stefan";
         return "Jez";
-    }
-
-    function _heroDescription(uint8 heroId) internal pure returns (string memory) {
-        if (heroId == HERO_DUNKEN) {
-            return "an ancient stone titan who wields a crackling orb of pure energy, guardian of forgotten civilizations";
-        }
-        if (heroId == HERO_STEFAN) {
-            return "a genius frog scientist of the Viltrumite order, master of technology and biological enhancement";
-        }
-        return "a mysterious cosmic entity with glowing eyes, channeling divine lightning through their fingertips";
     }
 
     receive() external payable {}

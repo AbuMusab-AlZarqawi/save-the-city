@@ -62,9 +62,8 @@ async function main() {
   // Verify the contract is working
   console.log("Verifying contract deployment...");
   const owner = await saveTheCity.owner();
-  const playFee = await saveTheCity.PLAY_FEE();
   console.log("Contract owner:", owner);
-  console.log("Play fee:", ethers.formatEther(playFee), "RITUAL");
+  console.log("Play fee: FREE (gas only)");
   console.log("\n✅ Deployment successful!\n");
 }
 

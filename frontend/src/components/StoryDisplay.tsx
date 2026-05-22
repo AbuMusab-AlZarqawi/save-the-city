@@ -3,8 +3,8 @@
 import { useEffect, useState, useRef } from "react";
 import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
-import { useWriteContract, useWaitForTransactionReceipt, usePublicClient } from "wagmi";
-import { parseEther, decodeEventLog } from "viem";
+import { useWriteContract, useWaitForTransactionReceipt } from "wagmi";
+import { decodeEventLog } from "viem";
 import { SAVE_THE_CITY_ABI, CONTRACT_ADDRESS } from "@/lib/contract";
 import { HEROES } from "@/lib/heroes";
 import { GameState } from "@/app/page";
@@ -16,6 +16,8 @@ interface StoryDisplayProps {
   onPlayAgain: () => void;
 }
 
+type Step = "generating" | "confirm-tx" | "mining" | "done" | "error";
+
 export default function StoryDisplay({
   gameState,
   phase,
@@ -24,101 +26,106 @@ export default function StoryDisplay({
 }: StoryDisplayProps) {
   const { scenario, heroId, story, txHash } = gameState;
   const hero = heroId !== null ? HEROES[heroId] : null;
+
+  const [step, setStep] = useState<Step>("generating");
+  const [generatedStory, setGeneratedStory] = useState<string>("");
   const [displayedStory, setDisplayedStory] = useState("");
   const [storyDone, setStoryDone] = useState(false);
-  const [statusMsg, setStatusMsg] = useState("Preparing deployment...");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState("Summoning the AI oracle...");
   const hasFired = useRef(false);
-  const publicClient = usePublicClient();
 
   const { writeContract, data: writeTxHash, error: writeError } = useWriteContract();
+  const { data: receipt } = useWaitForTransactionReceipt({ hash: writeTxHash });
 
-  const { data: receipt, isLoading: isMining } = useWaitForTransactionReceipt({
-    hash: writeTxHash,
-  });
-
-  // Fire transaction on mount
+  // ── Step 1: Call the API route to generate the story ──────────────────────
   useEffect(() => {
     if (hasFired.current || heroId === null) return;
     hasFired.current = true;
 
-    setTimeout(() => {
-      setStatusMsg("Confirm transaction in MetaMask...");
-      writeContract({
-        address: CONTRACT_ADDRESS,
-        abi: SAVE_THE_CITY_ABI,
-        functionName: "playGame",
-        args: [heroId, scenario],
-        value: parseEther("0.01"),
-      });
-    }, 800);
+    const generate = async () => {
+      try {
+        setStep("generating");
+        setStatusMsg("AI is writing your hero's story...");
+
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ heroId, scenario }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || "Generation failed");
+        }
+
+        const { story } = await res.json();
+        setGeneratedStory(story);
+
+        // Step 2: Now submit to chain
+        setStep("confirm-tx");
+        setStatusMsg("Story ready! Confirm the transaction in MetaMask to save it onchain...");
+
+        writeContract({
+          address: CONTRACT_ADDRESS,
+          abi: SAVE_THE_CITY_ABI,
+          functionName: "playGame",
+          args: [heroId, scenario, story],
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        setErrorMsg(message);
+        setStep("error");
+      }
+    };
+
+    generate();
   }, [heroId, scenario, writeContract]);
 
-  // Handle write error
+  // ── Handle write error (user rejected etc) ────────────────────────────────
   useEffect(() => {
-    if (writeError) {
-      setErrorMsg(writeError.message.includes("User rejected")
-        ? "Transaction rejected. Hit Play Again to try."
-        : `Error: ${writeError.message.slice(0, 100)}`
-      );
+    if (!writeError) return;
+    const msg = writeError.message;
+    if (msg.includes("User rejected") || msg.includes("user rejected")) {
+      setErrorMsg("Transaction rejected. Your story was generated but not saved onchain. Hit Play Again to retry.");
+    } else {
+      setErrorMsg(`Transaction error: ${msg.slice(0, 120)}`);
     }
+    setStep("error");
   }, [writeError]);
 
-  // Handle receipt
-  useEffect(() => {
-    if (!receipt || !publicClient) return;
-    setStatusMsg("Decoding onchain story...");
-
-    try {
-      // Find the GamePlayed event in the receipt
-      let story = "";
-      let gameNumber = 0;
-
-      for (const log of receipt.logs) {
-        try {
-          const decoded = decodeEventLog({
-            abi: SAVE_THE_CITY_ABI,
-            data: log.data,
-            topics: log.topics,
-            eventName: "GamePlayed",
-          });
-          story = decoded.args.story as string;
-          gameNumber = Number(decoded.args.gameNumber);
-          break;
-        } catch {
-          // not this log
-        }
-      }
-
-      if (story) {
-        onGameComplete(story, receipt.transactionHash, gameNumber);
-      } else {
-        setErrorMsg("Story not found in transaction — the LLM precompile may still be warming up on testnet.");
-      }
-    } catch (err) {
-      setErrorMsg("Failed to decode story from transaction.");
-    }
-  }, [receipt, publicClient, onGameComplete]);
-
-  // Status messages while mining
+  // ── Step 3: Wait for mining ───────────────────────────────────────────────
   useEffect(() => {
     if (!writeTxHash || receipt) return;
-    const msgs = [
-      "Transaction submitted to Ritual Chain...",
-      "LLM precompile processing your request inside TEE...",
-      "AI is generating your unique story onchain...",
-      "Story being cryptographically sealed...",
-      "Waiting for block confirmation...",
-    ];
-    let i = 0;
-    const interval = setInterval(() => {
-      i = (i + 1) % msgs.length;
-      setStatusMsg(msgs[i]);
-    }, 3000);
-    return () => clearInterval(interval);
+    setStep("mining");
+    setStatusMsg("Transaction submitted — saving your story to Ritual Chain...");
   }, [writeTxHash, receipt]);
 
-  // Animate story text
+  // ── Step 4: Receipt confirmed ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!receipt) return;
+
+    let gameNumber = 0;
+    for (const log of receipt.logs) {
+      try {
+        const decoded = decodeEventLog({
+          abi: SAVE_THE_CITY_ABI,
+          data: log.data,
+          topics: log.topics,
+          eventName: "GamePlayed",
+        });
+        gameNumber = Number(decoded.args.gameNumber);
+        break;
+      } catch {
+        // not this log
+      }
+    }
+
+    setStep("done");
+    onGameComplete(generatedStory, receipt.transactionHash, gameNumber);
+  }, [receipt, generatedStory, onGameComplete]);
+
+  // ── Typewriter for story reveal ───────────────────────────────────────────
   useEffect(() => {
     if (!story) return;
     let i = 0;
@@ -138,6 +145,14 @@ export default function StoryDisplay({
 
   if (!hero) return null;
 
+  const stepLabel: Record<Step, string> = {
+    generating: "🤖 AI generating story...",
+    "confirm-tx": "✍️ Confirm in MetaMask...",
+    mining: "⛓ Saving to Ritual Chain...",
+    done: "✅ Saved onchain!",
+    error: "❌ Error",
+  };
+
   return (
     <div className="max-w-3xl mx-auto py-8">
       {/* Hero header */}
@@ -150,21 +165,11 @@ export default function StoryDisplay({
           className="relative w-20 h-20 rounded-sm overflow-hidden border-2 flex-shrink-0"
           style={{ borderColor: hero.color, boxShadow: `0 0 20px ${hero.glowColor}` }}
         >
-          <Image
-            src={hero.image}
-            alt={hero.name}
-            fill
-            className="object-cover object-top"
-          />
+          <Image src={hero.image} alt={hero.name} fill className="object-cover object-top" />
         </div>
         <div>
-          <p className="font-mono text-xs tracking-widest text-white/40 uppercase mb-1">
-            Hero Dispatched
-          </p>
-          <h2
-            className="font-display font-black text-3xl"
-            style={{ color: hero.color, textShadow: `0 0 15px ${hero.glowColor}` }}
-          >
+          <p className="font-mono text-xs tracking-widest text-white/40 uppercase mb-1">Hero Dispatched</p>
+          <h2 className="font-display font-black text-3xl" style={{ color: hero.color, textShadow: `0 0 15px ${hero.glowColor}` }}>
             {hero.name}
           </h2>
           <p className="font-mono text-xs text-white/40">{hero.title}</p>
@@ -186,14 +191,61 @@ export default function StoryDisplay({
         <p className="font-body text-white/70 text-sm leading-relaxed">{scenario}</p>
       </motion.div>
 
-      {/* Story / Loading area */}
+      {/* Progress steps — shown while playing */}
+      {phase === "playing" && !errorMsg && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="border border-white/10 bg-black/40 p-4 mb-6"
+        >
+          <div className="flex flex-col gap-3">
+            {(["generating", "confirm-tx", "mining", "done"] as Step[]).map((s, i) => {
+              const stepOrder = ["generating", "confirm-tx", "mining", "done"];
+              const currentIndex = stepOrder.indexOf(step);
+              const thisIndex = stepOrder.indexOf(s);
+              const isDone = thisIndex < currentIndex || step === "done";
+              const isActive = s === step;
+
+              return (
+                <div key={s} className="flex items-center gap-3">
+                  <div
+                    className="w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 text-xs font-bold"
+                    style={{
+                      borderColor: isDone ? hero.color : isActive ? hero.color : "rgba(255,255,255,0.2)",
+                      backgroundColor: isDone ? hero.color : "transparent",
+                      color: isDone ? "#000" : isActive ? hero.color : "rgba(255,255,255,0.3)",
+                    }}
+                  >
+                    {isDone ? "✓" : i + 1}
+                  </div>
+                  <span
+                    className="font-mono text-xs tracking-wide"
+                    style={{
+                      color: isDone ? hero.color : isActive ? "white" : "rgba(255,255,255,0.3)",
+                    }}
+                  >
+                    {stepLabel[s]}
+                    {isActive && <span className="ml-2 animate-pulse">●</span>}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <p className="font-mono text-xs text-white/40 mt-4 border-t border-white/10 pt-3">
+            {statusMsg}
+          </p>
+        </motion.div>
+      )}
+
+      {/* Story / Error box */}
       <motion.div
         initial={{ opacity: 0, scale: 0.98 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ delay: 0.3 }}
         className="relative border-2 p-8"
         style={{
-          borderColor: phase === "result" ? `${hero.color}80` : "rgba(255,45,45,0.3)",
+          borderColor: phase === "result" ? `${hero.color}80` : errorMsg ? "rgba(255,45,45,0.4)" : "rgba(255,255,255,0.1)",
           background:
             phase === "result"
               ? `linear-gradient(135deg, ${hero.glowColor}10 0%, rgba(0,0,0,0.8) 100%)`
@@ -208,6 +260,7 @@ export default function StoryDisplay({
         <div className="absolute bottom-0 right-0 w-5 h-5 border-b-2 border-r-2" style={{ borderColor: hero.color }} />
 
         <AnimatePresence mode="wait">
+          {/* Loading spinner while generating */}
           {phase === "playing" && !errorMsg && (
             <motion.div
               key="loading"
@@ -216,7 +269,6 @@ export default function StoryDisplay({
               exit={{ opacity: 0 }}
               className="text-center py-8"
             >
-              {/* Animated orb */}
               <div className="relative w-20 h-20 mx-auto mb-6">
                 <div
                   className="absolute inset-0 rounded-full border-2 spin"
@@ -231,33 +283,24 @@ export default function StoryDisplay({
                     animationDuration: "0.7s",
                   }}
                 />
-                <div
-                  className="absolute inset-0 flex items-center justify-center text-2xl"
-                >
-                  ⚡
-                </div>
+                <div className="absolute inset-0 flex items-center justify-center text-2xl">⚡</div>
               </div>
-
-              <p
-                className="font-mono text-sm tracking-widest"
-                style={{ color: hero.color }}
-              >
-                {statusMsg}
-              </p>
-              <p className="font-mono text-xs text-white/30 mt-2">
-                AI inference runs onchain inside TEE
+              <p className="font-mono text-sm tracking-widest" style={{ color: hero.color }}>
+                {step === "generating" ? "AI crafting your story..." : step === "confirm-tx" ? "Check MetaMask now ↗" : "Confirming onchain..."}
               </p>
             </motion.div>
           )}
 
+          {/* Error state */}
           {errorMsg && (
-            <motion.div
-              key="error"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-center py-8"
-            >
-              <p className="text-danger font-body mb-4">{errorMsg}</p>
+            <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-8">
+              <p className="text-danger font-body mb-2 text-sm leading-relaxed">{errorMsg}</p>
+              {generatedStory && (
+                <div className="mt-4 mb-6 text-left border border-white/10 p-4">
+                  <p className="font-mono text-xs text-white/30 mb-2">YOUR GENERATED STORY (not yet saved):</p>
+                  <p className="font-body text-white/70 text-sm leading-relaxed">{generatedStory}</p>
+                </div>
+              )}
               <button
                 onClick={onPlayAgain}
                 className="px-8 py-3 font-display font-bold text-sm tracking-widest border border-gold text-gold hover:bg-gold hover:text-black transition-colors"
@@ -267,27 +310,18 @@ export default function StoryDisplay({
             </motion.div>
           )}
 
+          {/* Story reveal */}
           {phase === "result" && story && (
-            <motion.div
-              key="story"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-            >
-              <p
-                className="font-mono text-xs tracking-widest mb-4"
-                style={{ color: hero.color }}
-              >
-                ⚡ ONCHAIN STORY — TEE VERIFIED
+            <motion.div key="story" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <p className="font-mono text-xs tracking-widest mb-4" style={{ color: hero.color }}>
+                ⚡ ONCHAIN STORY — PERMANENT RECORD
               </p>
               <p className="font-body text-white text-lg leading-relaxed">
                 {displayedStory}
                 {!storyDone && (
                   <span
                     className="inline-block w-0.5 h-5 ml-1 align-middle"
-                    style={{
-                      backgroundColor: hero.color,
-                      animation: "alertFlicker 0.6s ease-in-out infinite",
-                    }}
+                    style={{ backgroundColor: hero.color, animation: "alertFlicker 0.6s ease-in-out infinite" }}
                   />
                 )}
               </p>
@@ -298,30 +332,15 @@ export default function StoryDisplay({
 
       {/* Result footer */}
       {phase === "result" && storyDone && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="mt-8"
-        >
-          {/* Onchain proof */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="mt-8">
           <div className="border border-white/10 bg-black/40 p-4 mb-6">
-            <p className="font-mono text-xs text-white/30 tracking-widest mb-2">
-              PERMANENT ONCHAIN RECORD
-            </p>
-            {txHash && (
-              <p className="font-mono text-xs text-gold/70 break-all">
-                TX: {txHash}
-              </p>
-            )}
+            <p className="font-mono text-xs text-white/30 tracking-widest mb-2">PERMANENT ONCHAIN RECORD</p>
+            {txHash && <p className="font-mono text-xs text-gold/70 break-all">TX: {txHash}</p>}
             {gameState.gameNumber && (
-              <p className="font-mono text-xs text-white/40 mt-1">
-                Save #{gameState.gameNumber}
-              </p>
+              <p className="font-mono text-xs text-white/40 mt-1">Save #{gameState.gameNumber}</p>
             )}
           </div>
 
-          {/* Victory banner */}
           <div
             className="text-center border-2 py-6 mb-6"
             style={{
@@ -330,15 +349,12 @@ export default function StoryDisplay({
               background: `linear-gradient(135deg, ${hero.glowColor}20, transparent)`,
             }}
           >
-            <p className="font-display font-black text-3xl text-white mb-1">
-              🏙 CITY SAVED
-            </p>
+            <p className="font-display font-black text-3xl text-white mb-1">🏙 CITY SAVED</p>
             <p className="font-mono text-sm" style={{ color: hero.color }}>
               {hero.name} is the hero this city deserved.
             </p>
           </div>
 
-          {/* Play again */}
           <div className="flex justify-center">
             <motion.button
               whileHover={{ scale: 1.05 }}

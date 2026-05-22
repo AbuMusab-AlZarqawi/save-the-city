@@ -1,14 +1,15 @@
-// Contract ABI for SaveTheCity
+// Contract ABI for SaveTheCity (story passed in as parameter — no LLM precompile)
 export const SAVE_THE_CITY_ABI = [
   // Write functions
   {
     inputs: [
       { internalType: "uint8", name: "heroId", type: "uint8" },
       { internalType: "string", name: "scenario", type: "string" },
+      { internalType: "string", name: "story", type: "string" },
     ],
     name: "playGame",
-    outputs: [{ internalType: "string", name: "story", type: "string" }],
-    stateMutability: "payable",
+    outputs: [],
+    stateMutability: "nonpayable",
     type: "function",
   },
   {
@@ -19,13 +20,6 @@ export const SAVE_THE_CITY_ABI = [
     type: "function",
   },
   // Read functions
-  {
-    inputs: [],
-    name: "getScenarioSeed",
-    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function",
-  },
   {
     inputs: [{ internalType: "uint256", name: "count", type: "uint256" }],
     name: "getRecentGames",
@@ -104,13 +98,6 @@ export const SAVE_THE_CITY_ABI = [
   },
   {
     inputs: [],
-    name: "PLAY_FEE",
-    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
-    inputs: [],
     name: "totalGamesPlayed",
     outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
     stateMutability: "view",
@@ -134,6 +121,3 @@ export const SAVE_THE_CITY_ABI = [
 ] as const;
 
 export const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || "0x0000000000000000000000000000000000000000") as `0x${string}`;
-
-export const PLAY_FEE_ETH = "0";
-export const PLAY_FEE_WEI = BigInt("0"); // 0.01 ETH in wei
