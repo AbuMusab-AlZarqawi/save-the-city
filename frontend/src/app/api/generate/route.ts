@@ -47,7 +47,7 @@ Write a thrilling, dramatic 3-sentence story of exactly how ${heroName} saved th
         "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "llama3-8b-8192",
+        model: "llama-3.3-70b-versatile",
         max_tokens: 300,
         messages: [{ role: "user", content: prompt }],
       }),
