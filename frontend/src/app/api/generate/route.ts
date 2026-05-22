@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   try {
     const { heroId, scenario } = await req.json();
 
-    if (heroId === undefined  heroId === null  !scenario) {
+    if (heroId === undefined || heroId === null || !scenario) {
       return NextResponse.json({ error: "Missing heroId or scenario" }, { status: 400 });
     }
 
